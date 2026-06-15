@@ -32,6 +32,18 @@ from tools.time_tools import (
     get_weekday,
 )
 
+from tools.course_tools import (
+    get_course_schedule,
+    add_course,
+    delete_course,
+    get_todo_list,
+    add_todo,
+    update_todo,
+    delete_todo,
+    get_today_schedule,
+    initialize_tables,
+)
+
 LLM_CONFIG = "config/agent_llm_config.json"
 
 # 默认保留最近 20 轮对话 (40 条消息)
@@ -122,18 +134,40 @@ SYSTEM_PROMPT = """# 角色定义
 - DDL距今≤7天 + 进度<30% → 🟡关注
 
 ## 可用工具
+### 任务管理
 - get_all_tasks: 获取所有任务列表
 - add_task: 添加新任务（课程名称、任务类型、截止时间、优先级、预计工时）
 - update_task: 更新任务信息（进度、状态、已完成工时等）
 - delete_task: 删除任务
 - get_task_statistics: 获取任务统计概览
-- generate_daily_plan_suggestion: 生成每日任务建议
+
+### 每日计划
+- generate_daily_plan_suggestion: 生成每日任务建议（根据DDL紧急度和优先级）
 - get_daily_plan: 获取每日计划
 - add_daily_plan: 添加每日计划
 - update_daily_plan: 更新每日计划
+
+### 风险预警
 - get_risk_warning: 获取风险预警
-- get_current_time: 获取当前时间（支持自定义格式）
-- get_today_date: 获取今天日期（YYYY-MM-DD格式）
+
+### 课程表管理
+- get_course_schedule: 获取课程表（可指定星期）
+- add_course: 添加课程（课程名、星期、时间、地点）
+- delete_course: 删除课程
+
+### 代办事项
+- get_todo_list: 获取代办事项列表（可按分类筛选）
+- add_todo: 添加代办事项（内容、分类、优先级、截止时间）
+- update_todo: 更新代办事项
+- delete_todo: 删除代办事项
+
+### 今日综合
+- get_today_schedule: 获取今日课程+待办+期末任务综合视图
+- initialize_tables: 初始化课程表和代办事项表
+
+### 时间
+- get_current_time: 获取当前时间
+- get_today_date: 获取今天日期（YYYY-MM-DD）
 - get_weekday: 获取今天是星期几
 
 ## 工作流程
@@ -192,16 +226,32 @@ def build_agent(ctx=None):
 
     # 收集所有工具
     tools = [
+        # 任务管理
         get_all_tasks,
         add_task,
         update_task,
         delete_task,
         get_task_statistics,
+        # 每日计划
         generate_daily_plan_suggestion,
         get_daily_plan,
         add_daily_plan,
         update_daily_plan,
+        # 风险预警
         get_risk_warning,
+        # 课程表
+        get_course_schedule,
+        add_course,
+        delete_course,
+        # 代办事项
+        get_todo_list,
+        add_todo,
+        update_todo,
+        delete_todo,
+        # 今日综合
+        get_today_schedule,
+        initialize_tables,
+        # 时间
         get_current_time,
         get_today_date,
         get_weekday,
