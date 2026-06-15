@@ -1,6 +1,6 @@
 """
 飞书多维表格工具封装
-用于操作期末任务进度跟踪智能体的飞书多维表格数据
+用于操作期末任务跟踪助手的数据
 """
 import json
 from typing import Any, Optional
@@ -127,18 +127,24 @@ def get_client() -> FeishuBitableClient:
 def _convert_date_to_timestamp(date_str: str) -> int:
     """将日期字符串转换为毫秒时间戳"""
     try:
-        # 尝试解析 YYYY-MM-DD 格式
         dt = datetime.strptime(date_str, "%Y-%m-%d")
         return int(dt.timestamp() * 1000)
     except ValueError:
         return 0
 
 
+def _parse_timestamp(value: Any) -> str:
+    """解析时间戳或日期值"""
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value / 1000).strftime("%Y-%m-%d")
+    return str(value) if value else ""
+
+
 @tool
 def get_all_tasks() -> str:
-    """获取所有任务列表，用于查看任务总览。
+    """获取所有任务列表。用于查看任务总览，了解当前所有任务情况。
     Returns:
-        所有任务的JSON列表，包含任务ID、课程名称、任务类型、截止时间、优先级、预计工时、状态等信息
+        所有任务的JSON列表，包含任务ID、任务名称、课程名称、任务类型、截止时间、进度、状态、优先级、预计工时、已用工时、备注等信息
     """
     client = get_client()
     try:
@@ -148,15 +154,16 @@ def get_all_tasks() -> str:
             fields = record.get("fields", {})
             task = {
                 "record_id": record.get("record_id"),
-                "课程名称": fields.get("课程名称", ""),
                 "任务名称": fields.get("任务名称", ""),
+                "课程名称": fields.get("课程名称", ""),
                 "任务类型": fields.get("任务类型", ""),
-                "截止时间": fields.get("截止时间", ""),
-                "优先级": fields.get("优先级", ""),
-                "预计工时(小时)": fields.get("预计工时(小时)", 0),
-                "状态": fields.get("状态", "待开始"),
-                "描述": fields.get("描述", ""),
-                "创建时间": fields.get("创建时间", ""),
+                "截止时间": _parse_timestamp(fields.get("截止时间", "")),
+                "进度": fields.get("进度", 0),
+                "状态": fields.get("状态", "未开始"),
+                "优先级": fields.get("优先级", "🟡中"),
+                "预计工时": fields.get("预计工时", 0),
+                "已用工时": fields.get("已用工时", 0),
+                "备注": fields.get("备注", ""),
             }
             tasks.append(task)
         return json.dumps(tasks, ensure_ascii=False, indent=2)
@@ -181,15 +188,15 @@ def add_task(
         task_name: 任务名称/标题
         task_type: 任务类型，只能是"作业"、"考试"、"论文"、"实验"、"展示"中的一个
         deadline: 截止时间，格式为YYYY-MM-DD
-        priority: 优先级，只能是"高"、"中"、"低"中的一个
+        priority: 优先级，只能是"🔴高"、"🟡中"、"🟢低"中的一个
         estimated_hours: 预计工时（小时）
-        description: 任务描述（可选）
+        description: 备注描述（可选）
     
     Returns:
         添加结果，成功返回任务ID，失败返回错误信息
     """
     valid_types = ["作业", "考试", "论文", "实验", "展示"]
-    valid_priorities = ["高", "中", "低"]
+    valid_priorities = ["🔴高", "🟡中", "🟢低"]
     
     if task_type not in valid_types:
         return f"任务类型错误，有效值: {', '.join(valid_types)}"
@@ -203,21 +210,23 @@ def add_task(
         
         records = [{
             "fields": {
-                "课程名称": course_name,
                 "任务名称": task_name,
+                "课程名称": course_name,
                 "任务类型": task_type,
                 "截止时间": deadline_timestamp,
+                "进度": 0,
+                "状态": "未开始",
                 "优先级": priority,
-                "预计工时(小时)": estimated_hours,
-                "状态": "待开始",
-                "描述": description,
+                "预计工时": estimated_hours,
+                "已用工时": 0,
+                "备注": description,
             }
         }]
         
         result = client.add_records(TASKS_TABLE_ID, records)
         if result:
             record_id = result[0].get("record_id")
-            return f"任务添加成功！任务ID: {record_id}"
+            return f"✅ 任务添加成功！\n📝 {task_name}\n📚 {course_name} | ⏰ {deadline}\n🎯 优先级: {priority}"
         return "任务添加失败"
     except Exception as e:
         return f"添加任务失败: {str(e)}"
@@ -231,7 +240,9 @@ def update_task(
     deadline: str = None,
     priority: str = None,
     estimated_hours: float = None,
+    progress: int = None,
     status: str = None,
+    used_hours: float = None,
     description: str = None
 ) -> str:
     """更新任务信息。
@@ -243,8 +254,10 @@ def update_task(
         deadline: 新截止时间，格式为YYYY-MM-DD（可选）
         priority: 新优先级（可选）
         estimated_hours: 新预计工时（可选）
-        status: 新状态，如"待开始"、"进行中"、"已完成"（可选）
-        description: 新描述（可选）
+        progress: 新进度 0-100（可选）
+        status: 新状态，如"未开始"、"进行中"、"待提交"、"已完成"、"已逾期"（可选）
+        used_hours: 已用工时（可选）
+        description: 新备注（可选）
     
     Returns:
         更新结果
@@ -255,14 +268,18 @@ def update_task(
             return f"任务类型错误，有效值: {', '.join(valid_types)}"
     
     if priority:
-        valid_priorities = ["高", "中", "低"]
+        valid_priorities = ["🔴高", "🟡中", "🟢低"]
         if priority not in valid_priorities:
             return f"优先级错误，有效值: {', '.join(valid_priorities)}"
     
     if status:
-        valid_statuses = ["待开始", "进行中", "已完成", "已逾期"]
+        valid_statuses = ["未开始", "进行中", "待提交", "已完成", "已逾期"]
         if status not in valid_statuses:
             return f"状态错误，有效值: {', '.join(valid_statuses)}"
+    
+    if progress is not None:
+        if progress < 0 or progress > 100:
+            return "进度必须在 0-100 之间"
     
     client = get_client()
     try:
@@ -276,11 +293,15 @@ def update_task(
         if priority is not None:
             fields["优先级"] = priority
         if estimated_hours is not None:
-            fields["预计工时(小时)"] = estimated_hours
+            fields["预计工时"] = estimated_hours
+        if progress is not None:
+            fields["进度"] = progress
         if status is not None:
             fields["状态"] = status
+        if used_hours is not None:
+            fields["已用工时"] = used_hours
         if description is not None:
-            fields["描述"] = description
+            fields["备注"] = description
         
         if not fields:
             return "没有需要更新的字段"
@@ -291,7 +312,7 @@ def update_task(
         }]
         
         client.update_records(TASKS_TABLE_ID, records)
-        return f"任务更新成功！任务ID: {task_id}"
+        return f"✅ 任务更新成功！\n📊 进度: {progress}% | 状态: {status or '不变'}"
     except Exception as e:
         return f"更新任务失败: {str(e)}"
 
@@ -309,7 +330,7 @@ def delete_task(task_id: str) -> str:
     client = get_client()
     try:
         client.delete_records(TASKS_TABLE_ID, [task_id])
-        return f"任务删除成功！任务ID: {task_id}"
+        return "🗑️ 任务删除成功！"
     except Exception as e:
         return f"删除任务失败: {str(e)}"
 
@@ -333,24 +354,19 @@ def get_daily_plan(date: str = None) -> str:
         plans = []
         for record in records:
             fields = record.get("fields", {})
-            plan_date = fields.get("日期", "")
-            # 如果字段存储的是时间戳
-            if isinstance(plan_date, (int, float)):
-                plan_date = datetime.fromtimestamp(plan_date / 1000).strftime("%Y-%m-%d")
+            plan_date = _parse_timestamp(fields.get("日期", ""))
             
-            if date and str(plan_date) != date and str(plan_date)[:10] != date:
+            if date and plan_date != date:
                 continue
                 
             plan = {
                 "record_id": record.get("record_id"),
                 "日期": plan_date,
-                "任务ID": fields.get("任务ID", ""),
-                "任务名称": fields.get("任务名称", ""),
-                "课程名称": fields.get("课程名称", ""),
-                "计划工时": fields.get("计划工时", 0),
-                "实际工时": fields.get("实际工时", 0),
-                "完成状态": fields.get("完成状态", "未完成"),
-                "备注": fields.get("备注", ""),
+                "关联任务ID": fields.get("关联任务", ""),
+                "今日目标": fields.get("今日目标", ""),
+                "预计用时": fields.get("预计用时", 0),
+                "实际用时": fields.get("实际用时", 0),
+                "完成状态": fields.get("完成状态", "未开始"),
             }
             plans.append(plan)
         return json.dumps(plans, ensure_ascii=False, indent=2)
@@ -362,20 +378,16 @@ def get_daily_plan(date: str = None) -> str:
 def add_daily_plan(
     date: str,
     task_id: str,
-    task_name: str,
-    course_name: str,
-    planned_hours: float,
-    notes: str = ""
+    today_goal: str,
+    planned_hours: float
 ) -> str:
     """添加每日计划。
     
     Args:
         date: 日期，格式为YYYY-MM-DD
-        task_id: 对应的任务ID
-        task_name: 任务名称
-        course_name: 课程名称
-        planned_hours: 计划工时（小时）
-        notes: 备注（可选）
+        task_id: 关联的任务ID
+        today_goal: 今日目标描述
+        planned_hours: 预计用时（小时）
     
     Returns:
         添加结果
@@ -387,20 +399,18 @@ def add_daily_plan(
         records = [{
             "fields": {
                 "日期": date_timestamp,
-                "任务ID": task_id,
-                "任务名称": task_name,
-                "课程名称": course_name,
-                "计划工时": planned_hours,
-                "实际工时": 0,
-                "完成状态": "未完成",
-                "备注": notes,
+                "关联任务": task_id,
+                "今日目标": today_goal,
+                "预计用时": planned_hours,
+                "实际用时": 0,
+                "完成状态": "未开始",
             }
         }]
         
         result = client.add_records(DAILY_PLAN_TABLE_ID, records)
         if result:
             record_id = result[0].get("record_id")
-            return f"每日计划添加成功！计划ID: {record_id}"
+            return f"✅ 每日计划添加成功！\n🎯 {today_goal}\n⏰ 预计 {planned_hours} 小时"
         return "每日计划添加失败"
     except Exception as e:
         return f"添加每日计划失败: {str(e)}"
@@ -411,21 +421,21 @@ def update_daily_plan(
     plan_id: str,
     actual_hours: float = None,
     status: str = None,
-    notes: str = None
+    today_goal: str = None
 ) -> str:
     """更新每日计划进度。
     
     Args:
         plan_id: 计划ID（record_id）
-        actual_hours: 实际工时（可选）
-        status: 完成状态，如"未完成"、"已完成"（可选）
-        notes: 备注（可选）
+        actual_hours: 实际用时（可选）
+        status: 完成状态，如"未开始"、"进行中"、"已完成"（可选）
+        today_goal: 今日目标（可选）
     
     Returns:
         更新结果
     """
     if status:
-        valid_statuses = ["未完成", "已完成"]
+        valid_statuses = ["未开始", "进行中", "已完成"]
         if status not in valid_statuses:
             return f"状态错误，有效值: {', '.join(valid_statuses)}"
     
@@ -433,11 +443,11 @@ def update_daily_plan(
     try:
         fields = {}
         if actual_hours is not None:
-            fields["实际工时"] = actual_hours
+            fields["实际用时"] = actual_hours
         if status is not None:
             fields["完成状态"] = status
-        if notes is not None:
-            fields["备注"] = notes
+        if today_goal is not None:
+            fields["今日目标"] = today_goal
         
         if not fields:
             return "没有需要更新的字段"
@@ -448,7 +458,7 @@ def update_daily_plan(
         }]
         
         client.update_records(DAILY_PLAN_TABLE_ID, records)
-        return f"每日计划更新成功！计划ID: {plan_id}"
+        return f"✅ 每日计划更新成功！\n📊 状态: {status or '不变'}"
     except Exception as e:
         return f"更新每日计划失败: {str(e)}"
 
@@ -456,7 +466,7 @@ def update_daily_plan(
 @tool
 def generate_daily_plan_suggestion(date: str = None) -> str:
     """根据任务紧急度和优先级生成每日任务建议。
-    该工具会分析所有待开始和进行中的任务，按DDL紧急程度和优先级排序，生成每日任务建议。
+    该工具会分析所有未完成任务，按DDL紧急程度和优先级排序，生成每日任务建议。
     
     Args:
         date: 日期，格式为YYYY-MM-DD，默认为今天
@@ -469,7 +479,6 @@ def generate_daily_plan_suggestion(date: str = None) -> str:
     
     client = get_client()
     try:
-        # 获取所有未完成任务
         records = client.list_records(TASKS_TABLE_ID)
         
         pending_tasks = []
@@ -477,33 +486,42 @@ def generate_daily_plan_suggestion(date: str = None) -> str:
         
         for record in records:
             fields = record.get("fields", {})
-            status = fields.get("状态", "待开始")
+            status = fields.get("状态", "未开始")
             
-            if status == "已完成":
+            if status in ["已完成", "已逾期"]:
                 continue
             
             deadline = fields.get("截止时间", "")
-            # 处理时间戳
-            if isinstance(deadline, (int, float)):
-                deadline_dt = datetime.fromtimestamp(deadline / 1000)
-                deadline_str = deadline_dt.strftime("%Y-%m-%d")
-            else:
-                deadline_str = str(deadline) if deadline else "无"
-                try:
-                    deadline_dt = datetime.strptime(deadline_str, "%Y-%m-%d")
-                except:
-                    deadline_dt = today
+            deadline_str = _parse_timestamp(deadline)
             
-            # 计算紧急度（距离截止日期的天数）
+            try:
+                deadline_dt = datetime.strptime(deadline_str, "%Y-%m-%d")
+            except:
+                deadline_dt = today
+            
             days_until_deadline = (deadline_dt - today).days
+            progress = fields.get("进度", 0)
             
-            # 紧急度评分：越接近截止日期分数越高
+            # 风险评分
+            risk_level = ""
+            if days_until_deadline <= 1 and status == "未开始":
+                risk_level = "🔴紧急"
+            elif days_until_deadline <= 3 and progress < 50:
+                risk_level = "🟡警告"
+            elif days_until_deadline <= 7 and progress < 30:
+                risk_level = "🟡关注"
+            
+            # 优先级权重
+            priority = fields.get("优先级", "🟡中")
+            priority_weight = {"🔴高": 1.5, "🟡中": 1.0, "🟢低": 0.5}.get(priority, 1.0)
+            
+            # 紧急度评分
             if days_until_deadline < 0:
-                urgency_score = 100 + abs(days_until_deadline)  # 已逾期，紧急度最高
+                urgency_score = 100 + abs(days_until_deadline)
             elif days_until_deadline == 0:
-                urgency_score = 90  # 今天截止
+                urgency_score = 95
             elif days_until_deadline == 1:
-                urgency_score = 80  # 明天截止
+                urgency_score = 85
             elif days_until_deadline <= 3:
                 urgency_score = 70
             elif days_until_deadline <= 7:
@@ -511,11 +529,6 @@ def generate_daily_plan_suggestion(date: str = None) -> str:
             else:
                 urgency_score = 30
             
-            # 优先级权重
-            priority = fields.get("优先级", "中")
-            priority_weight = {"高": 1.5, "中": 1.0, "低": 0.5}.get(priority, 1.0)
-            
-            # 综合评分
             total_score = urgency_score * priority_weight
             
             task = {
@@ -525,26 +538,28 @@ def generate_daily_plan_suggestion(date: str = None) -> str:
                 "任务类型": fields.get("任务类型", ""),
                 "截止时间": deadline_str,
                 "优先级": priority,
-                "预计工时": fields.get("预计工时(小时)", 0),
-                "当前状态": status,
+                "进度": progress,
+                "状态": status,
                 "距截止天数": days_until_deadline,
+                "预计工时": fields.get("预计工时", 0),
                 "紧急度评分": round(total_score, 2),
+                "风险等级": risk_level,
             }
             pending_tasks.append(task)
         
         # 按综合评分排序
         pending_tasks.sort(key=lambda x: x["紧急度评分"], reverse=True)
         
-        # 生成建议（建议每天完成1-3个任务）
+        # 生成建议
         suggestions = []
-        max_daily_hours = 8  # 建议每天最多8小时
-        
+        max_daily_hours = 8
         total_planned_hours = 0
-        for i, task in enumerate(pending_tasks[:5]):  # 最多推荐5个任务
+        
+        for task in pending_tasks[:5]:
             estimated = task["预计工时"]
             if total_planned_hours + estimated <= max_daily_hours:
-                task["建议优先级"] = i + 1
-                task["建议计划工时"] = estimated
+                task["建议优先级"] = len(suggestions) + 1
+                task["建议用时"] = estimated
                 suggestions.append(task)
                 total_planned_hours += estimated
         
@@ -561,7 +576,10 @@ def generate_daily_plan_suggestion(date: str = None) -> str:
 @tool
 def get_risk_warning() -> str:
     """获取风险预警信息。
-    检测即将逾期（3天内）和高优先级未完成任务。
+    检测即将逾期和高优先级任务，按照风险评分逻辑：
+    - DDL距今≤1天 + 未开始 → 🔴紧急
+    - DDL距今≤3天 + 进度<50% → 🟡警告
+    - DDL距今≤7天 + 进度<30% → 🟡关注
     
     Returns:
         风险预警列表（JSON格式）
@@ -572,55 +590,50 @@ def get_risk_warning() -> str:
         
         warnings = []
         today = datetime.now()
-        three_days_later = today.replace(hour=23, minute=59, second=59)
         
         for record in records:
             fields = record.get("fields", {})
-            status = fields.get("状态", "待开始")
+            status = fields.get("状态", "未开始")
             
-            if status == "已完成":
+            if status in ["已完成", "已逾期"]:
                 continue
             
             deadline = fields.get("截止时间", "")
-            priority = fields.get("优先级", "中")
+            deadline_str = _parse_timestamp(deadline)
+            priority = fields.get("优先级", "🟡中")
+            progress = fields.get("进度", 0)
             
-            # 处理时间戳
-            if isinstance(deadline, (int, float)):
-                deadline_dt = datetime.fromtimestamp(deadline / 1000)
-                deadline_str = deadline_dt.strftime("%Y-%m-%d")
-            else:
-                deadline_str = str(deadline) if deadline else "无"
-                try:
-                    deadline_dt = datetime.strptime(deadline_str, "%Y-%m-%d")
-                except:
-                    continue
+            try:
+                deadline_dt = datetime.strptime(deadline_str, "%Y-%m-%d")
+            except:
+                continue
             
             days_until = (deadline_dt - today).days
             
             warning_level = ""
             warning_msg = ""
             
-            # 判断预警级别
-            if days_until < 0:
-                warning_level = "🔴 严重"
-                warning_msg = f"任务已逾期 {abs(days_until)} 天！"
-            elif days_until == 0:
-                warning_level = "🔴 紧急"
-                warning_msg = "今天是截止日期！"
-            elif days_until == 1:
-                warning_level = "🟠 高危"
-                warning_msg = "明天是截止日期！"
-            elif days_until <= 3:
-                warning_level = "🟡 预警"
-                warning_msg = f"还有 {days_until} 天截止"
+            # 风险评分逻辑
+            if days_until <= 1 and status == "未开始":
+                warning_level = "🔴紧急"
+                warning_msg = "明天截止！还没开始！"
+            elif days_until <= 3 and progress < 50:
+                warning_level = "🟡警告"
+                warning_msg = f"还有{days_until}天截止，进度{progress}%太慢"
+            elif days_until <= 7 and progress < 30:
+                warning_level = "🟡关注"
+                warning_msg = f"一周内截止，进度{progress}%"
+            elif days_until < 0:
+                warning_level = "🔴逾期"
+                warning_msg = f"已逾期{abs(days_until)}天！"
             
-            # 高优先级且未开始的任务
-            if priority == "高" and status == "待开始":
+            # 高优先级未开始
+            if priority == "🔴高" and status == "未开始":
                 if not warning_level:
-                    warning_level = "🟡 注意"
-                    warning_msg = "高优先级任务尚未开始"
+                    warning_level = "⚠️注意"
+                    warning_msg = "高优先级任务还没开始"
                 else:
-                    warning_msg += " | 高优先级任务"
+                    warning_msg += " | 高优先级"
             
             if warning_level:
                 warning = {
@@ -630,7 +643,8 @@ def get_risk_warning() -> str:
                     "任务类型": fields.get("任务类型", ""),
                     "截止时间": deadline_str,
                     "优先级": priority,
-                    "当前状态": status,
+                    "进度": progress,
+                    "状态": status,
                     "距截止天数": days_until,
                     "预警级别": warning_level,
                     "预警原因": warning_msg,
@@ -660,12 +674,12 @@ def get_task_statistics() -> str:
     try:
         records = client.list_records(TASKS_TABLE_ID)
         
-        # 初始化统计
         stats = {
             "总数": 0,
             "已完成": 0,
             "进行中": 0,
-            "待开始": 0,
+            "未开始": 0,
+            "待提交": 0,
             "已逾期": 0,
             "按课程": {},
             "按任务类型": {},
@@ -674,10 +688,10 @@ def get_task_statistics() -> str:
         
         for record in records:
             fields = record.get("fields", {})
-            status = fields.get("状态", "待开始")
+            status = fields.get("状态", "未开始")
             course = fields.get("课程名称", "未分类")
             task_type = fields.get("任务类型", "未分类")
-            priority = fields.get("优先级", "中")
+            priority = fields.get("优先级", "🟡中")
             
             stats["总数"] += 1
             
@@ -686,21 +700,23 @@ def get_task_statistics() -> str:
                 stats["已完成"] += 1
             elif status == "进行中":
                 stats["进行中"] += 1
+            elif status == "未开始":
+                stats["未开始"] += 1
+            elif status == "待提交":
+                stats["待提交"] += 1
             elif status == "已逾期":
                 stats["已逾期"] += 1
-            else:
-                stats["待开始"] += 1
             
             # 按课程统计
             if course not in stats["按课程"]:
-                stats["按课程"][course] = {"总数": 0, "已完成": 0, "进行中": 0, "待开始": 0}
+                stats["按课程"][course] = {"总数": 0, "已完成": 0, "进行中": 0, "未开始": 0}
             stats["按课程"][course]["总数"] += 1
             if status == "已完成":
                 stats["按课程"][course]["已完成"] += 1
             elif status == "进行中":
                 stats["按课程"][course]["进行中"] += 1
             else:
-                stats["按课程"][course]["待开始"] += 1
+                stats["按课程"][course]["未开始"] += 1
             
             # 按任务类型统计
             if task_type not in stats["按任务类型"]:
