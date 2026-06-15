@@ -26,6 +26,12 @@ from tools.task_tools import (
     get_task_statistics,
 )
 
+from tools.time_tools import (
+    get_current_time,
+    get_today_date,
+    get_weekday,
+)
+
 LLM_CONFIG = "config/agent_llm_config.json"
 
 # 默认保留最近 20 轮对话 (40 条消息)
@@ -109,6 +115,9 @@ SYSTEM_PROMPT = """# 角色定义
 - add_daily_plan: 添加每日计划
 - update_daily_plan: 更新每日计划
 - get_risk_warning: 获取风险预警
+- get_current_time: 获取当前时间（支持自定义格式）
+- get_today_date: 获取今天日期（YYYY-MM-DD格式）
+- get_weekday: 获取今天是星期几
 
 ## 工作流程
 1. 当用户添加任务时，使用 add_task 工具，参数要完整
@@ -165,6 +174,9 @@ def build_agent(ctx=None):
         add_daily_plan,
         update_daily_plan,
         get_risk_warning,
+        get_current_time,
+        get_today_date,
+        get_weekday,
     ]
 
     # 创建 Agent
